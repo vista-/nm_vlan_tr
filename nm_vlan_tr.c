@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
   }
 
   // Open Netmap interface on 1st arg if RX
-  asprintf(&ifname_m, "%s*", ifname);
+  asprintf(&ifname_m, "%s", ifname);
   nd = nm_open(ifname_m, NULL, 0, 0);
   if(nd == NULL) {
     fprintf(stderr, "Cannot open interface %s\n", ifname);
