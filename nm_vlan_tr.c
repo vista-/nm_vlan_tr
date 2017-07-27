@@ -198,6 +198,12 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
       src_ring->head = src_ring->cur;
       dst_ring->cur = dst;
       dst_ring->head = dst_ring->cur;
+      #ifdef IOCTL_FIX
+        /* if(count > 64) { */
+	/*   count = 0; */
+          ioctl(NETMAP_FD(nd), NIOCTXSYNC);
+        /* } */
+      #endif
     }
   }
 }
