@@ -98,7 +98,11 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
   // The packet header (contains length information)
   struct nm_pkthdr pkthdr;
-  long int count;
+
+  int total = 0;
+  long int total_count = 0;
+  int ring = 0;
+  long int ring_count = 0;
 
   // Main "event" loop
   while(!abort_processing) {
@@ -111,10 +115,11 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
     // This ifdef sets the POLLOUT event to be constantly polled, causing the NIC to constantly dump the prepared packets. Set with -DPOLLOUT when compiling
     #ifdef CPOLLOUT
-      netmap_fds[0].events |= POLLOUT;
+    //      netmap_fds[0].events |= POLLOUT;
     #endif
 
     poll(netmap_fds, 1, 2500);
+
     // If there are no packets queued up, just go back to polling
     if(!(netmap_fds[0].revents & POLLIN)) continue;
 
@@ -150,6 +155,7 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
       u_int src = src_ring->cur;
       u_int dst = dst_ring->cur;
+      long int temp_ring = 0;
 
       while(limit-- > 0) {
 
@@ -165,19 +171,14 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
 	{{
             (*packetcount)++;
-            count++;
+            temp_ring++;
             // This ifdef sends a TX sync using ioctl every 64 packets. Set with -DIOCTL. Recommended!
-            #ifdef IOCTL
-              if(count % 64 == 0) {
-                ioctl(NETMAP_FD(nd), NIOCTXSYNC);
-              }
-            #endif
 
             if(rewrite_vlan_wire(pkt) == 0) {
               src = nm_ring_next(src_ring, src);
               continue;
             }
-
+	    
             dst_slot = &dst_ring->slot[dst];
 
             u_int tmp_idx = dst_slot->buf_idx;
@@ -191,6 +192,7 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
             src = nm_ring_next(src_ring, src);
             dst = nm_ring_next(dst_ring, dst);
+	    
         }}
       }
       // At the end of a batch move, set the cur and head ptrs on the rings
@@ -198,13 +200,15 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
       src_ring->head = src_ring->cur;
       dst_ring->cur = dst;
       dst_ring->head = dst_ring->cur;
-      #ifdef IOCTL_FIX
-        /* if(count > 64) { */
-	/*   count = 0; */
-          ioctl(NETMAP_FD(nd), NIOCTXSYNC);
-        /* } */
-      #endif
+      /* fprintf(stderr, "per ring: %ld\n", ring_count); */
+      total_count += temp_ring;
+      ring_count += temp_ring;
+      ++ring;
     }
+    ++total;
+    fprintf(stderr, "avg per ring (%d samples) %f\n", ring, ring_count / (double)ring);
+    fprintf(stderr, "avg per batch (%d samples): %f\n====\n", total, total_count / (double)total);
+
   }
 }
 
