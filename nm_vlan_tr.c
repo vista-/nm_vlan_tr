@@ -27,7 +27,10 @@ u_short vlan_assign[65536] = { 0 };
 u_char if_addr[6];
 
 static int abort_processing = 0;
-static unsigned long* packetcount = NULL;
+static unsigned long* packetcount_start = NULL;
+static unsigned long* packetcount_before = NULL;
+static unsigned long* packetcount_after = NULL;
+static unsigned long* packetcount_end = NULL;
 
 struct __attribute__((packed)) ethernet_header {
   u_char dsthost[6];        // Destination host MAC
@@ -68,8 +71,8 @@ void sigint_handler(int signal) {
 void* pps_display(void* arg) {
   while(!abort_processing) {
     sleep(1);
-    printf("%lu pps\n", *packetcount);
-    *packetcount = 0;
+    printf("enter loop: %lu | before rewriting: %lu | after rewriting: %lu | end loop: %lu pps\n", \
+	   *packetcount_start, *packetcount_before, *packetcount_after, *packetcount_end);
   }
 
   return 0;
@@ -98,12 +101,8 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
   // The packet header (contains length information)
   struct nm_pkthdr pkthdr;
-
-  int total = 0;
-  long int total_count = 0;
-  int ring = 0;
-  long int ring_count = 0;
-
+  u_int total = 0;
+  u_int totalc = 0;
   // Main "event" loop
   while(!abort_processing) {
     netmap_fds[0].events = POLLIN;
@@ -125,18 +124,29 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
     u_int src_ring_i = nd->first_rx_ring;
     u_int dst_ring_i = nd->first_tx_ring;
-
+    //u_int src_ring_last = src_ring_i;
+    //u_int dst_ring_last = dst_ring_i;
+    
     while(src_ring_i <= nd->last_rx_ring && dst_ring_i <= nd->last_tx_ring) {
       struct netmap_ring* src_ring = NETMAP_RXRING(nd->nifp, src_ring_i);
       struct netmap_ring* dst_ring = NETMAP_TXRING(nd->nifp, dst_ring_i);
-
+      /* if(src_ring_last != src_ring_i) { */
+      /* 	src_ring = NETMAP_RXRING(nd->nifp, src_ring_i); */
+      /*   src_ring_last = src_ring_i; */
+      /* } */
+      
+      /* if(dst_ring_last != dst_ring_i) { */
+      /* 	dst_ring = NETMAP_RXRING(nd->nifp, dst_ring_i); */
+      /*   dst_ring_last = dst_ring_i; */
+      /* }  */
+     
       if(nm_ring_empty(src_ring)) {
-        src_ring_i++;
+        /* src_ring_last =  */src_ring_i++;
         continue;
       }
 
       if(nm_ring_empty(dst_ring)) {
-	dst_ring_i++;
+	/* dst_ring_last =  */dst_ring_i++;
 	continue;
       }
 
@@ -155,10 +165,10 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
       u_int src = src_ring->cur;
       u_int dst = dst_ring->cur;
-      long int temp_ring = 0;
 
+      total += limit;
       while(limit-- > 0) {
-
+	(*packetcount_start)++;
         u_int src_idx;
         struct netmap_slot* src_slot;
         struct netmap_slot* dst_slot;
@@ -170,14 +180,14 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
         pkthdr.len = pkthdr.caplen = src_slot->len;
 
 	{{
-            (*packetcount)++;
-            temp_ring++;
-            // This ifdef sends a TX sync using ioctl every 64 packets. Set with -DIOCTL. Recommended!
+            (*packetcount_before)++; // Should be the same as packetcount_start, unless there is something fundamentally wrong with the compiler
 
             if(rewrite_vlan_wire(pkt) == 0) {
               src = nm_ring_next(src_ring, src);
               continue;
             }
+
+	    (*packetcount_after)++;
 	    
             dst_slot = &dst_ring->slot[dst];
 
@@ -192,7 +202,7 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
 
             src = nm_ring_next(src_ring, src);
             dst = nm_ring_next(dst_ring, dst);
-	    
+	    (*packetcount_end)++; // Should be the same as packetcount_after
         }}
       }
       // At the end of a batch move, set the cur and head ptrs on the rings
@@ -200,15 +210,9 @@ void packet_loop(struct nm_desc* nd, struct pollfd* netmap_fds) {
       src_ring->head = src_ring->cur;
       dst_ring->cur = dst;
       dst_ring->head = dst_ring->cur;
-      /* fprintf(stderr, "per ring: %ld\n", ring_count); */
-      total_count += temp_ring;
-      ring_count += temp_ring;
-      ++ring;
+      totalc++;
+      //fprintf(stderr, "avg: %f\n", total / (double) totalc);
     }
-    ++total;
-    fprintf(stderr, "avg per ring (%d samples) %f\n", ring, ring_count / (double)ring);
-    fprintf(stderr, "avg per batch (%d samples): %f\n====\n", total, total_count / (double)total);
-
   }
 }
 
@@ -253,10 +257,13 @@ int main(int argc, char** argv) {
   ifname = argv[1];
   // Get the HW address from the interface and save it
   set_hw_addr(ifname);
-
-  packetcount = (unsigned long*) malloc(sizeof(unsigned long));
-
-  if(packetcount == NULL) {
+  packetcount_start = (unsigned long*) malloc(sizeof(unsigned long));
+  packetcount_before = (unsigned long*) malloc(sizeof(unsigned long));
+  packetcount_after = (unsigned long*) malloc(sizeof(unsigned long));
+  packetcount_end = (unsigned long*) malloc(sizeof(unsigned long));
+  
+  if(packetcount_start == NULL || packetcount_before == NULL || \
+     packetcount_after == NULL || packetcount_end == NULL) {
     fprintf(stderr, "Malloc failed for 'packetcount'\n");
     return 1;
   }
